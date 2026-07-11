@@ -80,6 +80,23 @@
 
   <form id="abmForm">
 
+    <!-- EQUIPOS Y LICENCIAS ASIGNADOS (solo lectura, se completa automaticamente si se abre desde la ficha) -->
+    <div class="card" id="cardEquiposLicencias" style="display:none;">
+      <div class="section-title">Equipos y licencias asignados actualmente</div>
+      <div class="card-body">
+        <div class="row2">
+          <div class="field">
+            <label>Equipos</label>
+            <div id="listaEquipos" style="font-size:14px;color:#333;"></div>
+          </div>
+          <div class="field">
+            <label>Licencias</label>
+            <div id="listaLicencias" style="font-size:14px;color:#333;"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- DATOS DE ABM -->
     <div class="card">
       <div class="section-title">Datos de ABM</div>
@@ -999,10 +1016,30 @@
       }
     }
 
-    // Datos internos del empleado (no visibles en el form) para poder ejecutar la operacion real
+    // Datos internos del empleado (no visibles en el form) para el resumen
     window.__empleadoId = params.get('empleadoId') || '';
     window.__emailActual = params.get('email') || '';
     window.__estadoActual = params.get('estado') || 'Activo';
+
+    // Traer equipos y licencias asignados (SOLO LECTURA - GET, no modifica nada).
+    // Se usa unicamente para mostrar informacion de contexto y completar el resumen del ticket.
+    if(window.__empleadoId){
+      Promise.all([
+        fetch(window.UM_API+'/empleados/'+window.__empleadoId+'/hardware').then(r=>r.ok?r.json():[]).catch(()=>[]),
+        fetch(window.UM_API+'/empleados/'+window.__empleadoId+'/licencias').then(r=>r.ok?r.json():[]).catch(()=>[])
+      ]).then(([hardware, licenciasResp])=>{
+        const hwTexto = (hardware||[]).map(h=>h.descripcion||h.tipo).join(', ') || 'Sin equipos';
+        const licTexto = (licenciasResp||[]).map(l=>(l.licencia&&l.licencia.nombre)||l.licencia_nombre||'Licencia').join(', ') || 'Sin licencias';
+        window.__hardwareTexto = hwTexto;
+        window.__licenciasTexto = licTexto;
+        const cardEq = document.getElementById('cardEquiposLicencias');
+        if(cardEq && ((hardware||[]).length>0 || (licenciasResp||[]).length>0)){
+          document.getElementById('listaEquipos').textContent = hwTexto;
+          document.getElementById('listaLicencias').textContent = licTexto;
+          cardEq.style.display = 'block';
+        }
+      });
+    }
   })();
 
   // Toggle radio visual selection
@@ -1048,58 +1085,16 @@
 
     const val = id => (document.getElementById(id)||{}).value || '';
 
-    // Abrimos la pestaña ANTES del fetch para que el navegador no bloquee el popup
+    // Abrimos la pestaña ANTES de generar el resumen (para no bloquear el popup)
     const win = window.open('', '_blank');
     if(!win){
       alert('El navegador bloqueó la pestaña nueva. Habilitá los pop-ups para este sitio e intentá de nuevo.');
       return;
     }
-    win.document.write('<body style="font-family:Arial,sans-serif;padding:60px;color:#3A3A3A;">Procesando ' + tipoAbm + ', un momento...</body>');
 
-    // Ejecutar la operacion real en Inventario/UserManager LLYA segun el tipo de ABM
-    try{
-      if(tipoAbm==='Baja'){
-        if(!window.__empleadoId) throw new Error('Falta el identificador interno del empleado (empleadoId). Abrí este formulario desde la ficha del usuario en UserManager.');
-        const r = await fetch(window.UM_API+'/empleados/'+window.__empleadoId+'/baja', {method:'POST'});
-        if(!r.ok) throw new Error('HTTP '+r.status);
-      } else if(tipoAbm==='Alta'){
-        const nombreCompleto = (val('apellidos')+', '+val('nombres')).trim();
-        const body = {
-          legajo: val('legajo') ? parseInt(val('legajo'),10) : null,
-          nombre: nombreCompleto,
-          centro_costo: val('centroCostos'),
-          subauxiliar: val('sector'),
-          categoria: val('puesto'),
-          fecha_ingreso: val('fechaEjecucion'),
-          email: '',
-          sede: OFICINA_TO_SEDE[val('oficina')] || '',
-          estado: 'Activo'
-        };
-        const r = await fetch(window.UM_API+'/empleados', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-        if(!r.ok) throw new Error('HTTP '+r.status);
-      } else if(tipoAbm==='Modificación'){
-        if(!window.__empleadoId) throw new Error('Falta el identificador interno del empleado (empleadoId). Abrí este formulario desde la ficha del usuario en UserManager.');
-        const nombreCompleto = (val('apellidos')+', '+val('nombres')).trim();
-        const body = {
-          legajo: val('legajo') ? parseInt(val('legajo'),10) : null,
-          nombre: nombreCompleto,
-          centro_costo: val('centroCostos'),
-          subauxiliar: val('sector'),
-          categoria: val('puesto'),
-          fecha_ingreso: val('fechaEjecucion'),
-          email: window.__emailActual || '',
-          sede: OFICINA_TO_SEDE[val('oficina')] || '',
-          estado: window.__estadoActual || 'Activo'
-        };
-        const r = await fetch(window.UM_API+'/empleados/'+window.__empleadoId, {method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(body)});
-        if(!r.ok) throw new Error('HTTP '+r.status);
-      }
-    }catch(err){
-      win.document.open();
-      win.document.write('<body style="font-family:Arial,sans-serif;padding:60px;color:#B02020;"><h2>No se pudo ejecutar la operación</h2><p>'+String(err.message||err)+'</p><p>El resumen no se generó. Volvé a intentarlo o avisá a Sistemas.</p></body>');
-      win.document.close();
-      return;
-    }
+    // IMPORTANTE: este formulario publico SOLO genera el resumen para pegar en el ticket.
+    // La ejecucion real (alta/baja/modificacion en la base) se hace desde el sistema interno
+    // (Inventario/UserManager LLYA), que requiere inicio de sesion.
 
     // Fecha automática del día en que se genera el ABM
     const hoy = new Date();
@@ -1132,6 +1127,12 @@
       if(val('rutaFileServer')) rows.push(['Ruta File Server', val('rutaFileServer')]);
       if(val('rutaSharepoint')) rows.push(['Ruta SharePoint', val('rutaSharepoint')]);
       if(val('sistemasApps')) rows.push(['Sistemas o aplicaciones', val('sistemasApps')]);
+    }
+
+    if(tipoAbm!=='Alta' && (window.__hardwareTexto || window.__licenciasTexto)){
+      rows.push(['—','—']);
+      rows.push(['Equipos asignados', window.__hardwareTexto || 'Sin equipos']);
+      rows.push(['Licencias asignadas', window.__licenciasTexto || 'Sin licencias']);
     }
 
     if(tipoAbm==='Baja'){
