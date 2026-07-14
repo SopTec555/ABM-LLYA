@@ -101,6 +101,7 @@
     <div class="card">
       <div class="section-title">Datos de ABM</div>
       <div class="card-body">
+        <datalist id="empleadosDatalist"></datalist>
         <div class="field">
           <label class="req-star">Tipo de ABM</label>
           <div class="radio-group" id="tipoAbmGroup">
@@ -166,8 +167,8 @@
           </div>
           <div class="field">
             <label class="req-star">Apellidos</label>
-            <div class="hint">Primer y Segundo Apellido</div>
-            <input type="text" id="apellidos" required>
+            <div class="hint">Primer y Segundo Apellido. Si es un empleado existente (Baja/Modificación), elegilo de la lista para completar sus datos automáticamente.</div>
+            <input type="text" id="apellidos" list="empleadosDatalist" autocomplete="off" required>
           </div>
         </div>
       </div>
@@ -929,7 +930,7 @@
 
 <script>
   const COST_CENTERS = {
-    "CABA 1": ["CABA 1-ACTUARIO","CABA 1-AEF","CABA 1-AEF AE","CABA 1-AEF AI","CABA 1-AEF SYS","CABA 1-AUD EA","CABA 1-AUD PL","CABA 1-AUD XM","CABA 1-C.TRANSF DIG","CABA 1-COMPLIANCE","CABA 1-DPT","CABA 1-EF AUD-AE","CABA 1-EF AUD-AI","CABA 1-EF CONS-PLA","CABA 1-EF CONS-PROV","CABA 1-ENERGIA","CABA 1-IMP FLC","CABA 1-IMP GH","CABA 1-IMP GR","CABA 1-IMP INT","CABA 1-IMP LM","CABA 1-IMP MM","CABA 1-IMP RS","CABA 1-IMP SF","CABA 1-IMP VRS","CABA 1-LEGALES","CABA 1-LEGALES.A","CABA 1-LEGALES.B","CABA 1-LEGALES.C","CABA 1-LEGALES.D","CABA 1-NA AUD","CABA 1-NA IMP","CABA 1-PY ET","CABA 1-PY GO","CABA 1-PY IMP","CABA 1-PY NL","CABA 1-PY NN","CABA 1-SOCIEDADES","CABA 1-SOLINF","CABA 1-TD CORPO"],
+    "CABA 1": ["CABA 1-ACTUARIO","CABA 1-AEF","CABA 1-AEF AE","CABA 1-AEF AI","CABA 1-AEF SYS","CABA 1-AUD EA","CABA 1-AUD MM","CABA 1-AUD PL","CABA 1-AUD XM","CABA 1-C.TRANSF DIG","CABA 1-COMPLIANCE","CABA 1-DPT","CABA 1-EF AUD-AE","CABA 1-EF AUD-AI","CABA 1-EF CONS-PLA","CABA 1-EF CONS-PROV","CABA 1-ENERGIA","CABA 1-IMP FLC","CABA 1-IMP GH","CABA 1-IMP GR","CABA 1-IMP INT","CABA 1-IMP LM","CABA 1-IMP MM","CABA 1-IMP RS","CABA 1-IMP SF","CABA 1-IMP VRS","CABA 1-LEGALES","CABA 1-LEGALES.A","CABA 1-LEGALES.B","CABA 1-LEGALES.C","CABA 1-LEGALES.D","CABA 1-NA AUD","CABA 1-NA IMP","CABA 1-PY ET","CABA 1-PY GO","CABA 1-PY IMP","CABA 1-PY NL","CABA 1-PY NN","CABA 1-SOCIEDADES","CABA 1-SOLINF","CABA 1-TD CORPO"],
     "CABA 2": ["CABA 2-CONSUL","CABA 2-RESGUARDA"],
     "Córdoba": ["CORDOBA-AUD CBA","CORDOBA-IMP AU","CORDOBA-IMP DR","CORDOBA-NA CORDOBA"],
     "Corrientes": ["CORRIENTES-AUD CM","CORRIENTES-IMP DE.L","CORRIENTES-LEGALES","CORRIENTES-NA CTES","CORRIENTES-PYMES"],
@@ -986,29 +987,79 @@
   };
   window.UM_API = "https://192.168.100.116:8444/api";
 
-  // ==== Prefill desde parametros de la URL (llega desde Inventario/UserManager LLYA) ====
-  (function(){
-    const params = new URLSearchParams(window.location.search);
+  // ==== Clasificacion Sector / Centro de Costos por formato (la nomina tiene datos cargados
+  // de forma inconsistente entre columnas; detectamos por el FORMATO del valor) ====
+  function pareceCentroCosto(v){
+    if(!v) return false;
+    return /^[A-Za-zÁÉÍÓÚÑáéíóúñ.]+(\s?\d)?\s*-/.test(v.trim());
+  }
+  function clasificarSectorCentro(subauxiliar, centro_costo){
+    const a = (subauxiliar||'').trim();
+    const b = (centro_costo||'').trim();
+    const aEsCentro = pareceCentroCosto(a);
+    const bEsCentro = pareceCentroCosto(b);
+    if(aEsCentro && !bEsCentro) return { sector: b, centroCostos: a };
+    if(bEsCentro && !aEsCentro) return { sector: a, centroCostos: b };
+    return { sector: a, centroCostos: b };
+  }
+  function splitNombre(nombreCompleto){
+    const partes = (nombreCompleto||'').split(',');
+    const apellidos = (partes[0]||'').trim();
+    const nombres = (partes.slice(1).join(',')||'').trim();
+    return { nombres, apellidos };
+  }
+
+  // ==== Traer equipos y licencias asignados (SOLO LECTURA - GET, no modifica nada) ====
+  function cargarEquiposYLicencias(empleadoId){
+    if(!empleadoId) return;
+    Promise.all([
+      fetch(window.UM_API+'/empleados/'+empleadoId+'/hardware').then(r=>r.ok?r.json():[]).catch(()=>[]),
+      fetch(window.UM_API+'/empleados/'+empleadoId+'/licencias').then(r=>r.ok?r.json():[]).catch(()=>[])
+    ]).then(([hardware, licenciasResp])=>{
+      const hwTexto = (hardware||[]).map(h=>h.descripcion||h.tipo).join(', ') || 'Sin equipos';
+      const licTexto = (licenciasResp||[]).map(l=>(l.licencia&&l.licencia.nombre)||l.licencia_nombre||'Licencia').join(', ') || 'Sin licencias';
+      window.__hardwareTexto = hwTexto;
+      window.__licenciasTexto = licTexto;
+      const cardEq = document.getElementById('cardEquiposLicencias');
+      if(cardEq){
+        document.getElementById('listaEquipos').textContent = hwTexto;
+        document.getElementById('listaLicencias').textContent = licTexto;
+        cardEq.style.display = 'block';
+      }
+    });
+  }
+
+  // ==== Aplica los datos de un empleado al formulario (desde URL o desde la busqueda) ====
+  function aplicarPrefillEmpleado(datos){
     const setVal = (id,v)=>{ if(v){ const el=document.getElementById(id); if(el) el.value=v; } };
+    const setSelectConFallback = (id,v)=>{
+      if(!v) return;
+      const el = document.getElementById(id);
+      if(!el) return;
+      const yaExiste = Array.from(el.options).some(o=>o.value.toLowerCase()===v.toLowerCase());
+      if(!yaExiste){
+        const opt = document.createElement('option');
+        opt.value = v; opt.textContent = v;
+        el.insertBefore(opt, el.firstChild.nextSibling);
+      }
+      el.value = v;
+    };
 
-    setVal('legajo', params.get('legajo'));
-    setVal('nombres', params.get('nombres'));
-    setVal('apellidos', params.get('apellidos'));
-    setVal('puesto', params.get('puesto'));
-    setVal('sector', params.get('sector'));
+    setVal('legajo', datos.legajo);
+    setVal('nombres', datos.nombres);
+    setVal('apellidos', datos.apellidos);
+    setSelectConFallback('puesto', datos.puesto);
+    setSelectConFallback('sector', datos.sector);
 
-    const sedeParam = params.get('sede');
-    const oficinaParam = sedeParam ? (SEDE_TO_OFICINA[sedeParam] || '') : (params.get('oficina') || '');
+    const oficinaParam = datos.sede ? (SEDE_TO_OFICINA[datos.sede] || '') : (datos.oficina || '');
     if(oficinaParam){
       setVal('oficina', oficinaParam);
       oficinaSel.dispatchEvent(new Event('change'));
-      const ccParam = params.get('centroCostos');
-      if(ccParam){ setTimeout(()=>{ setVal('centroCostos', ccParam); }, 30); }
+      if(datos.centroCostos){ setTimeout(()=>{ setSelectConFallback('centroCostos', datos.centroCostos); }, 30); }
     }
 
-    const tipo = params.get('tipo');
-    if(tipo){
-      const radio = document.querySelector('input[name=tipoAbm][value="'+tipo+'"]');
+    if(datos.tipo){
+      const radio = document.querySelector('input[name=tipoAbm][value="'+datos.tipo+'"]');
       if(radio){
         radio.checked = true;
         radio.closest('.radio-opt').classList.add('sel');
@@ -1016,30 +1067,50 @@
       }
     }
 
-    // Datos internos del empleado (no visibles en el form) para el resumen
-    window.__empleadoId = params.get('empleadoId') || '';
-    window.__emailActual = params.get('email') || '';
-    window.__estadoActual = params.get('estado') || 'Activo';
+    window.__empleadoId = datos.empleadoId || '';
+    window.__emailActual = datos.email || '';
+    window.__estadoActual = datos.estado || 'Activo';
+    cargarEquiposYLicencias(window.__empleadoId);
+  }
 
-    // Traer equipos y licencias asignados (SOLO LECTURA - GET, no modifica nada).
-    // Se usa unicamente para mostrar informacion de contexto y completar el resumen del ticket.
-    if(window.__empleadoId){
-      Promise.all([
-        fetch(window.UM_API+'/empleados/'+window.__empleadoId+'/hardware').then(r=>r.ok?r.json():[]).catch(()=>[]),
-        fetch(window.UM_API+'/empleados/'+window.__empleadoId+'/licencias').then(r=>r.ok?r.json():[]).catch(()=>[])
-      ]).then(([hardware, licenciasResp])=>{
-        const hwTexto = (hardware||[]).map(h=>h.descripcion||h.tipo).join(', ') || 'Sin equipos';
-        const licTexto = (licenciasResp||[]).map(l=>(l.licencia&&l.licencia.nombre)||l.licencia_nombre||'Licencia').join(', ') || 'Sin licencias';
-        window.__hardwareTexto = hwTexto;
-        window.__licenciasTexto = licTexto;
-        const cardEq = document.getElementById('cardEquiposLicencias');
-        if(cardEq && ((hardware||[]).length>0 || (licenciasResp||[]).length>0)){
-          document.getElementById('listaEquipos').textContent = hwTexto;
-          document.getElementById('listaLicencias').textContent = licTexto;
-          cardEq.style.display = 'block';
-        }
+  // ==== Prefill desde parametros de la URL (llega desde Inventario/UserManager LLYA) ====
+  (function(){
+    const params = new URLSearchParams(window.location.search);
+    aplicarPrefillEmpleado({
+      legajo: params.get('legajo'), nombres: params.get('nombres'), apellidos: params.get('apellidos'),
+      puesto: params.get('puesto'), sector: params.get('sector'), sede: params.get('sede'),
+      oficina: params.get('oficina'), centroCostos: params.get('centroCostos'), tipo: params.get('tipo'),
+      empleadoId: params.get('empleadoId'), email: params.get('email'), estado: params.get('estado')
+    });
+  })();
+
+  // ==== Buscar empleado existente (autocompletado, SOLO LECTURA - GET) ====
+  (function(){
+    let empleadosMap = {};
+    fetch(window.UM_API+'/empleados/con-licencias').then(r=>r.ok?r.json():[]).then(lista=>{
+      const datalist = document.getElementById('empleadosDatalist');
+      (lista||[]).forEach(emp=>{
+        const etiqueta = emp.nombre + ' (Legajo ' + emp.legajo + ')';
+        empleadosMap[etiqueta] = emp;
+        const opt = document.createElement('option');
+        opt.value = etiqueta;
+        datalist.appendChild(opt);
       });
-    }
+    }).catch(()=>{});
+
+    document.getElementById('apellidos').addEventListener('input', function(){
+      const emp = empleadosMap[this.value];
+      if(!emp) return;
+      const tipoActual = (document.querySelector('input[name=tipoAbm]:checked')||{}).value || '';
+      if(tipoActual === 'Alta') return; // en Alta se carga un empleado nuevo, no se autocompleta desde uno existente
+      const nombreSplit = splitNombre(emp.nombre);
+      const clasif = clasificarSectorCentro(emp.subauxiliar, emp.centro_costo);
+      aplicarPrefillEmpleado({
+        legajo: emp.legajo, nombres: nombreSplit.nombres, apellidos: nombreSplit.apellidos,
+        puesto: emp.categoria, sector: clasif.sector, sede: emp.sede, centroCostos: clasif.centroCostos,
+        empleadoId: emp.id, email: emp.email, estado: emp.estado
+      });
+    });
   })();
 
   // Toggle radio visual selection
